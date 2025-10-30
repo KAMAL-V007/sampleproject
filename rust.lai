@@ -1,0 +1,69 @@
+n_init::{pin_data, pinned_drop, PinInit, PinnedDrop, pin_init_from_closure};
+use core::{
+    ptr::addr_of_mut,
+    marker::PhantomPinned,
+    cell::UnsafeCell,
+    pin::Pin,
+    mem::MaybeUninit,
+};
+mod bindings {
+    #[repr(C)]
+    pub struct foo {
+        /* fields from C ... */
+    }
+    extern "C" {
+        pub fn init_foo(ptr: *mut foo);
+        pub fn destroy_foo(ptr: *mut foo);
+        #[must_use = "you must check the error return code"]
+        pub fn enable_foo(ptr: *mut foo, flags: u32) -> i32;
+    }
+}
+
+/// # Invariants
+///
+/// `foo` is always initialized
+#[pin_data(PinnedDrop)]
+pub struct RawFoo {
+    #[pin]
+    _p: PhantomPinned,
+    #[pin]
+    foo: UnsafeCell<MaybeUninit<bindings::foo>>,
+}
+
+impl RawFoo {
+    pub fn new(flags: u32) -> impl PinInit<Self, i32> {
+        // SAFETY:
+        // - when the closure returns `Ok(())`, then it has successfully initialized and
+        //   enabled `foo`,
+        // - when it returns `Err(e)`, then it has cleaned up before
+        unsafe {
+            pin_init_from_closure(move |slot: *mut Self| {
+                // `slot` contains uninit memory, avoid creating a reference.
+                let foo = addr_of_mut!((*slot).foo);
+                let foo = UnsafeCell::raw_get(foo).cast::<bindings::foo>();
+
+                // Initialize the `foo`
+                bindings::init_foo(foo);
+
+                // Try to enable it.
+                let err = bindings::enable_foo(foo, flags);
+                if err != 0 {
+                    // Enabling has failed, first clean up the foo and then return the error.
+                    bindings::destroy_foo(foo);
+                    Err(err)
+                } else {
+                    // All fields of `RawFoo` have been initialized, since `_p` is a ZST.
+                    Ok(())
+                }
+            })
+        }
+    }
+}
+
+#[pinned_drop]
+impl PinnedDrop for RawFoo {
+    fn drop(self: Pin<&mut Self>) {
+        // SAFETY: Since `foo` is initialized, destroying is safe.
+        unsafe { bindings::destroy_foo(self.foo.get().cast::<bindings::foo>()) };
+    }
+}
