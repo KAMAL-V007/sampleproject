@@ -4,7 +4,7 @@ use core::{
     marker::PhantomPinned,
     cell::UnsafeCell,
     pin::Pin,
-    mem::MaybeUninit,
+    mem::MaybeUninit;
 };
 mod bindings {
     #[repr(C)]
